@@ -1,8 +1,10 @@
+# app.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import json
+import base64
 from datetime import datetime
 from typing import List
 
@@ -10,7 +12,8 @@ from database import (
     log_telematics, create_appointment, log_diagnosis,
     get_recent_alerts, get_dashboard_stats, get_customer_by_vehicle
 )
-from agents import diagnose_vehicle, generate_voice_script, create_manufacturing_alert
+# Added text_to_speech to imports
+from agents import diagnose_vehicle, generate_voice_script, create_manufacturing_alert, text_to_speech
 
 app = FastAPI(title="AgentX MVP")
 
@@ -77,6 +80,7 @@ async def vehicle_stream(websocket: WebSocket, vehicle_id: str):
                 )
                 
                 # Auto-book appointment if critical
+                audio_b64 = ""
                 if diagnosis["status"] == "CRITICAL":
                     appointment = create_appointment({
                         "vehicle_id": vehicle_id,
@@ -92,8 +96,14 @@ async def vehicle_stream(websocket: WebSocket, vehicle_id: str):
                         create_manufacturing_alert(
                             vehicle_model=customer["vehicle_model"],
                             issue_type=diagnosis["alerts"][0]["issue"],
-                            frequency=0.15  # Mock: 15% occurrence rate
+                            frequency=0.15
                         )
+                    
+                    # NEW: Generate Voice Audio for Critical Alerts
+                    print("🎤 Generating AI Voice Audio...")
+                    audio_bytes = text_to_speech(script)
+                    if audio_bytes:
+                        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
                 
                 # Send alert back to vehicle
                 await websocket.send_json({
@@ -108,7 +118,8 @@ async def vehicle_stream(websocket: WebSocket, vehicle_id: str):
                     "type": "NEW_ALERT",
                     "vehicle_id": vehicle_id,
                     "diagnosis": diagnosis,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "audio": audio_b64  # Sending audio data
                 })
             
             # Send normal acknowledgment
@@ -129,7 +140,6 @@ async def dashboard_stream(websocket: WebSocket):
     """Real-time dashboard updates"""
     await websocket.accept()
     active_connections.append(websocket)
-    
     try:
         while True:
             await websocket.receive_text()
@@ -148,7 +158,8 @@ async def broadcast_update(message: dict):
 @app.get("/")
 async def root():
     """Serve dashboard"""
-    with open("dashboard.html", "r") as f:
+    # UTF-8 Encoding Fix for Windows
+    with open("dashboard.html", "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
 @app.get("/api/stats")
@@ -183,4 +194,10 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    try:
+        # Run the server
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    except KeyboardInterrupt:
+        print("\n🛑 AgentX Server stopped by user.")
+    except Exception as e:
+        print(f"Error: {e}")
